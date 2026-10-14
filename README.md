@@ -284,16 +284,7 @@ python scripts/run_all_tests.py
 
 ---
 
-## 📄 Design Note & Deliverables
 
-- **2-Page Executive Design Note**: Available at [`docs/design-note.pdf`](file:///c:/Users/karan/OneDrive/Desktop/Assesment_software_Mayacardio/docs/design-note.pdf). Verified strictly $\le 2$ pages using PyMuPDF.
-- **Automated Submission Packager**:
-  ```bash
-  python scripts/make_submission.py --name Karan_Rai
-  ```
-  Generates `MayaCardio_Submission_Karan_Rai.zip` after validating page limits, running sanity tests, and scanning for credentials.
-
----
 
 <div align="center">
 
