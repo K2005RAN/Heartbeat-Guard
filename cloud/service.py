@@ -365,24 +365,23 @@ class CloudRequestHandler(http.server.BaseHTTPRequestHandler):
             min_win = max(0, min_affected_sample // 400 - 5)  # include 5-second lookback dependency
             max_win = (max_affected_sample // 400)
 
-            # Evaluate each window in range
+            overall_lookback = max(0, 400 * (min_win - 4))
+            overall_lookahead = 400 * (max_win + 1)
+
+            # Two bulk queries for the entire span rather than hundreds of single queries
+            bulk_s1 = self.store.get_all_samples_for_window(session_id, 1, overall_lookback, overall_lookahead)
+            bulk_s2 = self.store.get_all_samples_for_window(session_id, 2, 400 * min_win, 400 * (max_win + 1))
+
             for w in range(min_win, max_win + 1):
-                # Check finality: window w is final if sample 400(w+1) is accounted for
-                # Check stored or lost for sensor 1 and 2
                 w_start = 400 * w
                 w_end = w_start + 399
-                # Pull samples from store for w
-                # We need lookback for heart rate: samples 400(w-4) .. 400(w+1)
                 lookback_start = max(0, 400 * (w - 4))
                 lookahead_end = 400 * (w + 1)
 
-                s1_map = self.store.get_all_samples_for_window(session_id, 1, lookback_start, lookahead_end)
-                s2_map = self.store.get_all_samples_for_window(session_id, 2, w_start, w_end)
-
-                # Check if sample 400(w+1) is accounted for (stored or past head)
-                is_final = (lookahead_end in s1_map) or (lookahead_end < max_affected_sample)
-
+                is_final = (lookahead_end in bulk_s1) or (lookahead_end < max_affected_sample)
                 if is_final:
+                    s1_map = {idx: bulk_s1[idx] for idx in range(lookback_start, lookahead_end + 1) if idx in bulk_s1}
+                    s2_map = {idx: bulk_s2[idx] for idx in range(w_start, w_end + 1) if idx in bulk_s2}
                     res = compute_window_result(w, s1_map, s2_map, mode="online", session_id=session_id)
                     self.store.save_result(
                         session_id, w, "online",

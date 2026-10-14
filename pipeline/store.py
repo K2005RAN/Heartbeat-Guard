@@ -14,6 +14,7 @@ import os
 import sqlite3
 import struct
 import sys
+import threading
 import time
 from typing import Dict, List, Optional, Tuple
 
@@ -61,6 +62,7 @@ class DeviceStore:
 
         self.reserve_file_path = os.path.join(self.db_dir, RESERVE_FILE_NAME)
         self._ensure_reserve_file()
+        self.lock = threading.Lock()
         self.conn = self._init_db()
 
     def _ensure_reserve_file(self):
@@ -156,63 +158,66 @@ class DeviceStore:
         return conn
 
     def register_session(self, session_id: str):
-        with self.conn:
+        with self.lock, self.conn:
             self.conn.execute("""
                 INSERT OR IGNORE INTO sessions (session_id, start_time, finalized)
                 VALUES (?, ?, 0);
             """, (session_id, time.time()))
 
     def finalize_session(self, session_id: str):
-        with self.conn:
+        with self.lock, self.conn:
             self.conn.execute("""
                 UPDATE sessions SET finalized = 1, end_time = ? WHERE session_id = ?;
             """, (time.time(), session_id))
 
     def get_latest_session(self) -> Optional[str]:
-        cur = self.conn.cursor()
-        cur.execute("SELECT session_id FROM sessions ORDER BY rowid DESC LIMIT 1;")
-        row = cur.fetchone()
-        return row[0] if row else None
+        with self.lock:
+            cur = self.conn.cursor()
+            cur.execute("SELECT session_id FROM sessions ORDER BY rowid DESC LIMIT 1;")
+            row = cur.fetchone()
+            return row[0] if row else None
 
     def get_max_stored_index(self, session_id: str, sensor: int) -> int:
-        cur = self.conn.cursor()
-        cur.execute("""
-            SELECT MAX(first_index + count - 1) FROM blocks
-            WHERE session_id = ? AND sensor = ?;
-        """, (session_id, sensor))
-        row = cur.fetchone()
-        if row and row[0] is not None:
-            return row[0]
-        return -1
+        with self.lock:
+            cur = self.conn.cursor()
+            cur.execute("""
+                SELECT MAX(first_index + count - 1) FROM blocks
+                WHERE session_id = ? AND sensor = ?;
+            """, (session_id, sensor))
+            row = cur.fetchone()
+            if row and row[0] is not None:
+                return row[0]
+            return -1
 
     def store_block(self, session_id: str, sensor: int, first_index: int,
                     count: int, samples: List[List[int]], checksum: str) -> bool:
         """Stores a block of samples atomically. Returns True if inserted, False if duplicate."""
         packed_data = pack_24bit_samples(samples)
         now = time.time()
-        try:
-            with self.conn:
-                self.conn.execute("""
-                    INSERT INTO blocks (session_id, sensor, first_index, count, data, checksum, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?);
-                """, (session_id, sensor, first_index, count, packed_data, checksum, now))
-            return True
-        except sqlite3.IntegrityError:
-            # Block already stored (duplicate)
-            return False
-        except sqlite3.OperationalError as e:
-            if "full" in str(e).lower():
-                self.release_reserve_file()
-                # Log loss due to disk full
-                self.record_loss(session_id, sensor, first_index, first_index + count - 1, "disk_full")
+        with self.lock:
+            try:
+                with self.conn:
+                    self.conn.execute("""
+                        INSERT INTO blocks (session_id, sensor, first_index, count, data, checksum, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?);
+                    """, (session_id, sensor, first_index, count, packed_data, checksum, now))
+                return True
+            except sqlite3.IntegrityError:
+                # Block already stored (duplicate)
+                return False
+            except sqlite3.OperationalError as e:
+                if "full" in str(e).lower():
+                    self.release_reserve_file()
+                    # Log loss due to disk full
+                    self.record_loss(session_id, sensor, first_index, first_index + count - 1, "disk_full")
+                    raise
                 raise
-            raise
 
     def record_loss(self, session_id: str, sensor: int, from_index: int,
                     to_index: Optional[int], reason: str):
         """Records a lost sample range into the loss ledger."""
         now = time.time()
-        with self.conn:
+        with self.lock, self.conn:
             self.conn.execute("""
                 INSERT INTO losses (session_id, sensor, from_index, to_index, reason, created_at)
                 VALUES (?, ?, ?, ?, ?, ?);
@@ -220,51 +225,84 @@ class DeviceStore:
 
     def get_stored_ranges(self, session_id: str, sensor: int) -> List[Tuple[int, int]]:
         """Returns sorted list of [first_index, last_index] ranges held on device."""
-        cur = self.conn.cursor()
-        cur.execute("""
-            SELECT first_index, count FROM blocks
-            WHERE session_id = ? AND sensor = ?
-            ORDER BY first_index ASC;
-        """, (session_id, sensor))
-        ranges = []
-        for first_index, count in cur.fetchall():
-            ranges.append((first_index, first_index + count - 1))
-        return ranges
+        with self.lock:
+            cur = self.conn.cursor()
+            cur.execute("""
+                SELECT first_index, count FROM blocks
+                WHERE session_id = ? AND sensor = ?
+                ORDER BY first_index ASC;
+            """, (session_id, sensor))
+            ranges = []
+            for first_index, count in cur.fetchall():
+                ranges.append((first_index, first_index + count - 1))
+            return ranges
 
     def get_loss_ranges(self, session_id: str, sensor: int) -> List[Tuple[int, Optional[int], str]]:
-        cur = self.conn.cursor()
-        cur.execute("""
-            SELECT from_index, to_index, reason FROM losses
-            WHERE session_id = ? AND sensor = ?
-            ORDER BY from_index ASC;
-        """, (session_id, sensor))
-        return cur.fetchall()
+        with self.lock:
+            cur = self.conn.cursor()
+            cur.execute("""
+                SELECT from_index, to_index, reason FROM losses
+                WHERE session_id = ? AND sensor = ?
+                ORDER BY from_index ASC;
+            """, (session_id, sensor))
+            return cur.fetchall()
+
+    def get_live_blocks(self, session_id: str, sensor: int, limit: int = 10) -> List[dict]:
+        """Returns the newest unsent blocks at the head of collection for live streaming."""
+        with self.lock:
+            cur = self.conn.cursor()
+            cur.execute("""
+                SELECT b.first_index, b.count, b.data, b.checksum
+                FROM blocks b
+                LEFT JOIN cloud_ack a ON b.session_id = a.session_id AND b.sensor = a.sensor AND b.first_index = a.first_index
+                WHERE b.session_id = ? AND b.sensor = ? AND a.first_index IS NULL
+                ORDER BY b.first_index DESC
+                LIMIT ?;
+            """, (session_id, sensor, limit))
+            results = []
+            channels = 3 if sensor == 1 else 2
+            # Reverse so they are in ascending chronological order
+            rows = cur.fetchall()
+            rows.reverse()
+            for first_idx, count, data_blob, checksum in rows:
+                samples = unpack_24bit_samples(data_blob, channels)
+                results.append({
+                    "first_index": first_idx,
+                    "count": count,
+                    "samples": samples,
+                    "checksum": checksum
+                })
+            return results
+
+    def get_backlog_blocks(self, session_id: str, sensor: int, limit: int = 60) -> List[dict]:
+        """Returns the oldest unsent blocks for background catch-up transfer."""
+        with self.lock:
+            cur = self.conn.cursor()
+            cur.execute("""
+                SELECT b.first_index, b.count, b.data, b.checksum
+                FROM blocks b
+                LEFT JOIN cloud_ack a ON b.session_id = a.session_id AND b.sensor = a.sensor AND b.first_index = a.first_index
+                WHERE b.session_id = ? AND b.sensor = ? AND a.first_index IS NULL
+                ORDER BY b.first_index ASC
+                LIMIT ?;
+            """, (session_id, sensor, limit))
+            results = []
+            channels = 3 if sensor == 1 else 2
+            for first_idx, count, data_blob, checksum in cur.fetchall():
+                samples = unpack_24bit_samples(data_blob, channels)
+                results.append({
+                    "first_index": first_idx,
+                    "count": count,
+                    "samples": samples,
+                    "checksum": checksum
+                })
+            return results
 
     def get_unsent_blocks(self, session_id: str, sensor: int, limit: int = 100) -> List[dict]:
-        """Returns blocks not yet marked as cloud-acknowledged."""
-        cur = self.conn.cursor()
-        cur.execute("""
-            SELECT b.first_index, b.count, b.data, b.checksum
-            FROM blocks b
-            LEFT JOIN cloud_ack a ON b.session_id = a.session_id AND b.sensor = a.sensor AND b.first_index = a.first_index
-            WHERE b.session_id = ? AND b.sensor = ? AND a.first_index IS NULL
-            ORDER BY b.first_index ASC
-            LIMIT ?;
-        """, (session_id, sensor, limit))
-        results = []
-        channels = 3 if sensor == 1 else 2
-        for first_idx, count, data_blob, checksum in cur.fetchall():
-            samples = unpack_24bit_samples(data_blob, channels)
-            results.append({
-                "first_index": first_idx,
-                "count": count,
-                "samples": samples,
-                "checksum": checksum
-            })
-        return results
+        return self.get_backlog_blocks(session_id, sensor, limit)
 
     def mark_cloud_ack(self, session_id: str, sensor: int, first_index: int, count: int):
-        with self.conn:
+        with self.lock, self.conn:
             self.conn.execute("""
                 INSERT OR REPLACE INTO cloud_ack (session_id, sensor, first_index, count, acked_at)
                 VALUES (?, ?, ?, ?, ?);
@@ -272,39 +310,42 @@ class DeviceStore:
 
     def save_result(self, session_id: str, window: int, mode: str,
                     missing_1: int, missing_2: int, complete: bool, data_json: str):
-        with self.conn:
+        with self.lock, self.conn:
             self.conn.execute("""
                 INSERT OR REPLACE INTO results (session_id, window, mode, missing_1, missing_2, complete, data_json, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?);
             """, (session_id, window, mode, missing_1, missing_2, 1 if complete else 0, data_json, time.time()))
 
     def get_results(self, session_id: str) -> List[str]:
-        cur = self.conn.cursor()
-        cur.execute("""
-            SELECT data_json FROM results
-            WHERE session_id = ?
-            ORDER BY window ASC;
-        """, (session_id,))
-        return [row[0] for row in cur.fetchall()]
+        with self.lock:
+            cur = self.conn.cursor()
+            cur.execute("""
+                SELECT data_json FROM results
+                WHERE session_id = ?
+                ORDER BY window ASC;
+            """, (session_id,))
+            return [row[0] for row in cur.fetchall()]
 
     def get_counts(self, session_id: Optional[str] = None):
         """Returns (samples_saved, samples_cloud, backlog)."""
-        cur = self.conn.cursor()
-        if session_id:
-            cur.execute("SELECT COALESCE(SUM(count), 0) FROM blocks WHERE session_id = ?;", (session_id,))
-            saved = cur.fetchone()[0]
-            cur.execute("SELECT COALESCE(SUM(count), 0) FROM cloud_ack WHERE session_id = ?;", (session_id,))
-            cloud = cur.fetchone()[0]
-        else:
-            cur.execute("SELECT COALESCE(SUM(count), 0) FROM blocks;")
-            saved = cur.fetchone()[0]
-            cur.execute("SELECT COALESCE(SUM(count), 0) FROM cloud_ack;")
-            cloud = cur.fetchone()[0]
-        backlog = max(0, saved - cloud)
-        return saved, cloud, backlog
+        with self.lock:
+            cur = self.conn.cursor()
+            if session_id:
+                cur.execute("SELECT COALESCE(SUM(count), 0) FROM blocks WHERE session_id = ?;", (session_id,))
+                saved = cur.fetchone()[0]
+                cur.execute("SELECT COALESCE(SUM(count), 0) FROM cloud_ack WHERE session_id = ?;", (session_id,))
+                cloud = cur.fetchone()[0]
+            else:
+                cur.execute("SELECT COALESCE(SUM(count), 0) FROM blocks;")
+                saved = cur.fetchone()[0]
+                cur.execute("SELECT COALESCE(SUM(count), 0) FROM cloud_ack;")
+                cloud = cur.fetchone()[0]
+            backlog = max(0, saved - cloud)
+            return saved, cloud, backlog
 
     def close(self):
-        try:
-            self.conn.close()
-        except Exception:
-            pass
+        with self.lock:
+            try:
+                self.conn.close()
+            except Exception:
+                pass

@@ -94,7 +94,7 @@ class Uploader:
                 headers["Content-Encoding"] = "gzip"
             headers["Content-Length"] = str(len(body))
 
-            conn = self._get_http_conn(timeout=5.0)
+            conn = self._get_http_conn(timeout=25.0)
             conn.request("POST", "/ingest", body=body, headers=headers)
             resp = conn.getresponse()
             if resp.status == 200:
@@ -117,7 +117,7 @@ class Uploader:
         ack_list = []
 
         for sensor in (1, 2):
-            unsent = self.store.get_unsent_blocks(session_id, sensor, limit=10)
+            unsent = self.store.get_live_blocks(session_id, sensor, limit=5)
             for b in unsent:
                 blocks_to_send.append({
                     "sensor": sensor,
@@ -163,7 +163,7 @@ class Uploader:
 
         # Pull next unsent blocks
         for sensor in (1, 2):
-            unsent = self.store.get_unsent_blocks(session_id, sensor, limit=60)
+            unsent = self.store.get_backlog_blocks(session_id, sensor, limit=60)
             for b in unsent:
                 blocks_to_send.append({
                     "sensor": sensor,
