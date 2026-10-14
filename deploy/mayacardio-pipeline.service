@@ -1,0 +1,32 @@
+[Unit]
+Description=MayaCardio Never Lose a Heartbeat Bedside Pipeline Daemon
+After=network.target local-fs.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/var/lib/mayacardio
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/opt/mayacardio
+Environment=MAYACARDIO_DB_PATH=/var/lib/mayacardio/pipeline_data.db
+Environment=MAYACARDIO_CLOUD_URL=http://127.0.0.1:8000
+Environment=MAYACARDIO_AUTH_TOKEN=mayacardio_secret_token_2026
+
+ExecStart=/usr/local/bin/pipeline run --mock-host 127.0.0.1 --mock-port 7100 --db-path /var/lib/mayacardio/pipeline_data.db
+
+# Resilience & Auto-Restart
+Restart=always
+RestartSec=2s
+KillMode=process
+
+# Resource Quotas (Raspberry Pi 4 Limits: ARM64, max 4 cores, 2 GB RAM)
+CPUQuota=400%
+MemoryMax=2G
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

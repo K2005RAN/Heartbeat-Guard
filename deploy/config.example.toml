@@ -1,0 +1,28 @@
+# /etc/mayacardio/config.toml
+# MayaCardio Bedside Device Configuration
+
+[mock]
+# TCP address of the sensor mock service (official biosignal-mock or stand-in)
+host = "127.0.0.1"
+port = 7100
+poll_interval_sec = 0.25
+
+[storage]
+# Persistent SQLite database path (WAL mode, synchronous=FULL)
+db_path = "/var/lib/mayacardio/pipeline_data.db"
+
+[cloud]
+# Cloud Ingest Service URL (e.g. Fly.io, AWS Free Tier, or local simulator)
+url = "http://127.0.0.1:8000"
+# Bearer authentication token matching cloud service
+auth_token = "mayacardio_secret_token_2026"
+live_upload_interval_sec = 0.5
+backlog_batch_samples = 24000  # 60 seconds of data per request
+enable_gzip = true
+
+[monitor]
+# Network health probe settings
+probe_interval_sec = 2.0
+probe_timeout_sec = 2.0
+consecutive_failures_to_offline = 3  # ~6s (< 10s spec limit)
+consecutive_successes_to_online = 2  # ~4s (< 10s spec limit)

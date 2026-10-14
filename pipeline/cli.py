@@ -30,9 +30,35 @@ def get_default_db_path() -> str:
     return DEFAULT_DB_PATH
 
 
-def cmd_status(store: DeviceStore, mode: str = "offline"):
+STATE_FILE_PATH = "/tmp/mayacardio_state.json"
+
+
+def write_daemon_state(mode: str, session_id: Optional[str] = None):
+    try:
+        data = {"mode": mode, "session_id": session_id, "timestamp": time.time()}
+        with open(STATE_FILE_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
+
+def read_daemon_state() -> dict:
+    try:
+        if os.path.exists(STATE_FILE_PATH):
+            with open(STATE_FILE_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {"mode": "offline", "session_id": None}
+
+
+def cmd_status(store: DeviceStore, cloud_url: Optional[str] = None):
     """Prints current mode, samples saved, samples in the cloud, and backlog as ONE JSON line."""
-    saved, cloud, backlog = store.get_counts()
+    state = read_daemon_state()
+    mode = state.get("mode", "offline")
+    session_id = state.get("session_id")
+
+    saved, cloud, backlog = store.get_counts(session_id)
     status_obj = {
         "mode": mode,
         "samples_saved": saved,
@@ -50,7 +76,7 @@ def cmd_export(store: DeviceStore, session_id: str, source: str, cloud_url: Opti
         if not cloud_url:
             cloud_url = os.environ.get("MAYACARDIO_CLOUD_URL", "http://127.0.0.1:8000")
         if not token:
-            token = os.environ.get("MAYACARDIO_AUTH_TOKEN", "")
+            token = os.environ.get("MAYACARDIO_AUTH_TOKEN", "mayacardio_secret_token_2026")
         url = f"{cloud_url.rstrip('/')}/export?session={session_id}"
         req = urllib.request.Request(url)
         if token:
@@ -121,6 +147,67 @@ def cmd_verify(store: DeviceStore, session_id: str) -> int:
     return 0
 
 
+def cmd_run(mock_host: str, mock_port: int, db_path: str, offline_only: bool,
+            cloud_url: Optional[str], token: Optional[str]):
+    """Runs the complete Bedside Pipeline daemon."""
+    import threading
+    from pipeline.collector import Collector
+    from pipeline.uploader import Uploader
+    from pipeline.netmon import NetworkMonitor
+    from pipeline.local_processor import LocalProcessor
+
+    store = DeviceStore(db_path)
+    cloud_url = cloud_url or os.environ.get("MAYACARDIO_CLOUD_URL", "http://127.0.0.1:8000")
+    token = token or os.environ.get("MAYACARDIO_AUTH_TOKEN", "mayacardio_secret_token_2026")
+
+    collector = Collector(mock_host, mock_port, store)
+    local_proc = LocalProcessor(store)
+    uploader = None
+    netmon = None
+
+    current_mode = ["offline"]
+
+    def on_mode_change(new_mode: str):
+        current_mode[0] = new_mode
+        local_proc.set_offline_state(new_mode == "offline")
+        write_daemon_state(new_mode, collector.current_session_id)
+        sys.stderr.write(f"[PIPELINE DAEMON] Active mode: {new_mode}\n")
+
+    threads = []
+    c_th = threading.Thread(target=collector.run_loop, daemon=True)
+    lp_th = threading.Thread(target=local_proc.run_loop, daemon=True)
+    threads.extend([c_th, lp_th])
+
+    if not offline_only:
+        uploader = Uploader(cloud_url, token, store)
+        netmon = NetworkMonitor(cloud_url, on_mode_change=on_mode_change)
+        u_th = threading.Thread(target=uploader.run_loop, daemon=True)
+        nm_th = threading.Thread(target=netmon.run_loop, daemon=True)
+        threads.extend([u_th, nm_th])
+    else:
+        local_proc.set_offline_state(True)
+        write_daemon_state("offline", None)
+
+    for th in threads:
+        th.start()
+
+    sys.stderr.write("[PIPELINE DAEMON] Pipeline daemon started successfully\n")
+    try:
+        while True:
+            time.sleep(1.0)
+            write_daemon_state(current_mode[0], collector.current_session_id)
+    except KeyboardInterrupt:
+        sys.stderr.write("[PIPELINE DAEMON] Shutting down...\n")
+        collector.stop()
+        local_proc.stop()
+        if uploader:
+            uploader.stop()
+        if netmon:
+            netmon.stop()
+        store.close()
+        sys.stderr.write("[PIPELINE DAEMON] Stopped cleanly\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description="MayaCardio Bedside Pipeline CLI")
     subparsers = parser.add_subparsers(dest="command")
@@ -164,8 +251,19 @@ def main():
         sys.exit(1)
 
     db_path = getattr(args, "db_path", None) or get_default_db_path()
-    store = DeviceStore(db_path)
 
+    if args.command == "run":
+        cmd_run(
+            mock_host=args.mock_host,
+            mock_port=args.mock_port,
+            db_path=db_path,
+            offline_only=args.offline_only,
+            cloud_url=args.cloud_url,
+            token=args.token
+        )
+        return
+
+    store = DeviceStore(db_path)
     try:
         if args.command == "status":
             cmd_status(store)
@@ -176,14 +274,6 @@ def main():
         elif args.command == "verify":
             code = cmd_verify(store, args.session)
             sys.exit(code)
-        elif args.command == "run":
-            # For phase 2 collector run
-            from pipeline.collector import Collector
-            collector = Collector(args.mock_host, args.mock_port, store)
-            try:
-                collector.run_loop()
-            except KeyboardInterrupt:
-                collector.stop()
     finally:
         store.close()
 
