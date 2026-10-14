@@ -128,11 +128,30 @@ def cmd_export(store: DeviceStore, session_id: str, source: str, cloud_url: Opti
             print(json.dumps(loss_obj))
 
 
-def cmd_results(store: DeviceStore, session_id: str):
+def cmd_results(store: DeviceStore, session_id: str, cloud_url: Optional[str] = None, token: Optional[str] = None):
     """Outputs window results as one JSON line per window."""
     results = store.get_results(session_id)
-    for r in results:
-        print(r)
+    if results:
+        for r in results:
+            print(r)
+        return
+
+    # If no local results exist (e.g. session was processed online by cloud), fetch from cloud
+    import urllib.request
+    cloud_url = cloud_url or os.environ.get("MAYACARDIO_CLOUD_URL", "http://127.0.0.1:8000")
+    token = token or os.environ.get("MAYACARDIO_AUTH_TOKEN", "mayacardio_secret_token_2026")
+    url = f"{cloud_url.rstrip('/')}/results?session={session_id}"
+    req = urllib.request.Request(url)
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(req) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            results_list = data.get("results", []) if isinstance(data, dict) else data
+            for item in results_list:
+                print(json.dumps(item) if not isinstance(item, str) else item)
+    except Exception as e:
+        pass
 
 
 def cmd_verify(store: DeviceStore, session_id: str) -> int:
@@ -229,6 +248,8 @@ def main():
     p_results = subparsers.add_parser("results", help="Print window results")
     p_results.add_argument("--session", required=True, help="Session ID")
     p_results.add_argument("--db-path", default=None, help="Path to SQLite database")
+    p_results.add_argument("--cloud-url", default=None, help="Cloud service URL")
+    p_results.add_argument("--token", default=None, help="Cloud auth token")
 
     # verify
     p_verify = subparsers.add_parser("verify", help="Verify sample ledger continuity")
@@ -270,7 +291,7 @@ def main():
         elif args.command == "export":
             cmd_export(store, args.session, args.from_source, getattr(args, "cloud_url", None), getattr(args, "token", None))
         elif args.command == "results":
-            cmd_results(store, args.session)
+            cmd_results(store, args.session, getattr(args, "cloud_url", None), getattr(args, "token", None))
         elif args.command == "verify":
             code = cmd_verify(store, args.session)
             sys.exit(code)
