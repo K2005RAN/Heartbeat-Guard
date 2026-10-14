@@ -238,17 +238,33 @@ class BiosignalMockStandin:
         return int(elapsed * SAMPLE_RATE)
 
     def handle_client(self, client_sock: socket.socket):
-        client_sock.settimeout(1.0)
-        recv_buf = b""
+        client_sock.settimeout(0.5)
+        recv_buf = bytearray()
 
         while self.running:
+            # Check restart_after condition
+            if self.restart_after > 0 and self.start_time is not None:
+                elapsed = time.monotonic() - self.start_time
+                if elapsed >= self.restart_after:
+                    sys.stderr.write(f"[STAND-IN MOCK] Simulating process restart after {elapsed:.1f}s\n")
+                    self.session_id = uuid.uuid4().hex[:8]
+                    self.generator = SignalGenerator(self.mode, self.seed)
+                    self.buf1 = SensorBuffer(1, self.generator)
+                    self.buf2 = SensorBuffer(2, self.generator)
+                    self.start_time = time.monotonic()
+                    self.restart_after = 0  # one-time restart
+                    # Close socket to simulate process restart
+                    break
+
             try:
                 data = client_sock.recv(4096)
                 if not data:
                     break
-                recv_buf += data
+                recv_buf.extend(data)
                 while b"\n" in recv_buf:
-                    line, recv_buf = recv_buf.split(b"\n", 1)
+                    newline_idx = recv_buf.find(b"\n")
+                    line = bytes(recv_buf[:newline_idx])
+                    del recv_buf[:newline_idx + 1]
                     line_str = line.decode("utf-8").strip()
                     if not line_str:
                         continue
