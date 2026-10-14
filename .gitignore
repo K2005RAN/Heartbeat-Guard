@@ -1,0 +1,57 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Database & Runtime files (transient runtime data)
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+data/
+logs/
+run/
+*.log
+
+# Test artifacts that shouldn't be tracked in root
+tests/__pycache__/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Release zip
+*.zip
