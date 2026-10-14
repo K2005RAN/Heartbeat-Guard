@@ -98,7 +98,7 @@ flowchart TD
 
 The video demonstration is recorded and available directly inside the repository at [`video/demo.mp4`](file:///c:/Users/karan/OneDrive/Desktop/Assesment_software_Mayacardio/video/demo.mp4) (also accessible as [`video/Complete_Demo.mp4`](file:///c:/Users/karan/OneDrive/Desktop/Assesment_software_Mayacardio/video/Complete_Demo.mp4)).
 
-### Video Walkthrough Breakdown (Duration: ~4:45)
+### Video Walkthrough Breakdown (Duration: ~3.51)
 
 ```
 0:00 ── Scene 1: Baseline Online Streaming (400 Hz dual-sensor ingest, live cloud metrics < 1.4s)
@@ -106,7 +106,7 @@ The video demonstration is recorded and available directly inside the repository
 1:50 ── Scene 3: Network Restoration & Backlog Drain (Instant online switch, 34.5x catch-up to backlog = 0)
 2:50 ── Scene 4: Abrupt Process Crash (`kill -9`) & Replay (Rolling buffer replay, 0 silent gap recovery)
 3:45 ── Scene 5: Power Cut Proof, Ledger Verification & Ground Truth PASS (100% match)
-4:30 ── Scene 6: Architectural Conclusion & Deliverable Review
+
 ```
 
 ---
@@ -279,8 +279,6 @@ python scripts/run_all_tests.py
 │   └── resource-report.md              # Hardware resource measurement report
 └── video/                              # Demo video files & script
     ├── Complete_Demo.mp4               # Full 4:45 recorded demo video
-    ├── demo.mp4                        # Hardlink to Complete_Demo.mp4
-    ├── DEMO_RECORDING_SCRIPT.md        # Scene-by-scene script
     └── README.md                       # Video submission specifications
 ```
 
